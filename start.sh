@@ -2,7 +2,7 @@
 set -e  # Exit the script if any statement returns a non-true return value
 
 COMFYUI_DIR="/workspace/runpod-slim/ComfyUI"
-VENV_DIR="$COMFYUI_DIR/.venv"
+VENV_DIR="$COMFYUI_DIR/.venv-cu128"
 FILEBROWSER_CONFIG="/root/.config/filebrowser/config.json"
 DB_FILE="/workspace/runpod-slim/filebrowser.db"
 
@@ -142,122 +142,36 @@ fi
 
 # Setup ComfyUI if needed
 if [ ! -d "$COMFYUI_DIR" ] || [ ! -d "$VENV_DIR" ]; then
-    echo "First time setup: Installing ComfyUI and dependencies..."
-    
-    # Clone ComfyUI if not present
+    echo "First time setup: Copying baked ComfyUI to workspace..."
+
+    # Copy baked ComfyUI from image (no git, no network)
     if [ ! -d "$COMFYUI_DIR" ]; then
-        cd /workspace/runpod-slim
-        git clone https://github.com/comfyanonymous/ComfyUI.git
-    fi
-    
-    # Install ComfyUI-Manager if not present
-    if [ ! -d "$COMFYUI_DIR/custom_nodes/ComfyUI-Manager" ]; then
-        echo "Installing ComfyUI-Manager..."
-        mkdir -p "$COMFYUI_DIR/custom_nodes"
-        cd "$COMFYUI_DIR/custom_nodes"
-        git clone https://github.com/ltdrdata/ComfyUI-Manager.git
+        cp -r /opt/comfyui-baked "$COMFYUI_DIR"
+        echo "ComfyUI copied to workspace"
     fi
 
-    # Install additional custom nodes
-    CUSTOM_NODES=(
-        "https://github.com/kijai/ComfyUI-KJNodes"
-        "https://github.com/MoonGoblinDev/Civicomfy"
-        "https://github.com/MadiatorLabs/ComfyUI-RunpodDirect"
-    )
-
-    for repo in "${CUSTOM_NODES[@]}"; do
-        repo_name=$(basename "$repo")
-        if [ ! -d "$COMFYUI_DIR/custom_nodes/$repo_name" ]; then
-            echo "Installing $repo_name..."
-            cd "$COMFYUI_DIR/custom_nodes"
-            git clone "$repo"
-        fi
-    done
-    
-    # Create and setup virtual environment if not present
+    # Create venv with access to system packages (torch, numpy, etc. pre-installed in image)
     if [ ! -d "$VENV_DIR" ]; then
-        cd $COMFYUI_DIR
-        # Create venv with access to system packages (torch, numpy, etc. pre-installed in image)
-        python3.12 -m venv --system-site-packages $VENV_DIR
-        source $VENV_DIR/bin/activate
+        cd "$COMFYUI_DIR"
+        python3.12 -m venv --system-site-packages "$VENV_DIR"
+        source "$VENV_DIR/bin/activate"
 
         # Ensure pip is available in the venv (needed for ComfyUI-Manager)
-        python -m ensurepip --upgrade
-        python -m pip install --upgrade pip
-
-        # Update ComfyUI dependencies (frontend, etc.)
-        echo "Installing ComfyUI requirements..."
-        pip install -r "$COMFYUI_DIR/requirements.txt"
+        python -m ensurepip
 
         echo "Base packages (torch, numpy, etc.) available from system site-packages"
-        echo "Installing custom node dependencies..."
-
-        # Install dependencies for all custom nodes
-        cd "$COMFYUI_DIR/custom_nodes"
-        for node_dir in */; do
-            if [ -d "$node_dir" ]; then
-                echo "Checking dependencies for $node_dir..."
-                cd "$COMFYUI_DIR/custom_nodes/$node_dir"
-                
-                # Check for requirements.txt
-                if [ -f "requirements.txt" ]; then
-                    echo "Installing requirements.txt for $node_dir"
-                    pip install --no-cache-dir -r requirements.txt
-                fi
-
-                # Check for install.py
-                if [ -f "install.py" ]; then
-                    echo "Running install.py for $node_dir"
-                    python install.py
-                fi
-
-                # Check for setup.py
-                if [ -f "setup.py" ]; then
-                    echo "Running setup.py for $node_dir"
-                    pip install --no-cache-dir -e .
-                fi
-            fi
-        done
+        echo "ComfyUI ready — all dependencies pre-installed in image"
     fi
 else
     # Just activate the existing venv
-    source $VENV_DIR/bin/activate
-
-    # Update ComfyUI dependencies on each start (ensures frontend stays current)
-    echo "Updating ComfyUI dependencies..."
-    pip install -q -r "$COMFYUI_DIR/requirements.txt"
-
-    echo "Checking for custom node dependencies..."
-
-    # Install dependencies for all custom nodes
-    cd "$COMFYUI_DIR/custom_nodes"
-    for node_dir in */; do
-        if [ -d "$node_dir" ]; then
-            echo "Checking dependencies for $node_dir..."
-            cd "$COMFYUI_DIR/custom_nodes/$node_dir"
-            
-            # Check for requirements.txt
-            if [ -f "requirements.txt" ]; then
-                echo "Installing requirements.txt for $node_dir"
-                uv pip install --no-cache -r requirements.txt
-            fi
-            
-            # Check for install.py
-            if [ -f "install.py" ]; then
-                echo "Running install.py for $node_dir"
-                python install.py
-            fi
-            
-            # Check for setup.py
-            if [ -f "setup.py" ]; then
-                echo "Running setup.py for $node_dir"
-                uv pip install --no-cache -e .
-            fi
-        fi
-    done
+    source "$VENV_DIR/bin/activate"
+    echo "Using existing ComfyUI installation"
 fi
 
-# Start ComfyUI with custom arguments if provided
+# Warm up pip so ComfyUI-Manager's 5s timeout check doesn't fail on cold start
+python -m pip --version > /dev/null 2>&1
+
+# Start ComfyUI in foreground (exec replaces shell → proper signal handling, logs to stdout)
 cd $COMFYUI_DIR
 FIXED_ARGS="--listen 0.0.0.0 --port 8188"
 if [ -s "$ARGS_FILE" ]; then
@@ -265,16 +179,13 @@ if [ -s "$ARGS_FILE" ]; then
     CUSTOM_ARGS=$(grep -v '^#' "$ARGS_FILE" | tr '\n' ' ')
     if [ ! -z "$CUSTOM_ARGS" ]; then
         echo "Starting ComfyUI with additional arguments: $CUSTOM_ARGS"
-        nohup python main.py $FIXED_ARGS $CUSTOM_ARGS &> /workspace/runpod-slim/comfyui.log &
+        exec python main.py $FIXED_ARGS $CUSTOM_ARGS
     else
         echo "Starting ComfyUI with default arguments"
-        nohup python main.py $FIXED_ARGS &> /workspace/runpod-slim/comfyui.log &
+        exec python main.py $FIXED_ARGS
     fi
 else
     # File is empty, use only fixed args
     echo "Starting ComfyUI with default arguments"
-    nohup python main.py $FIXED_ARGS &> /workspace/runpod-slim/comfyui.log &
+    exec python main.py $FIXED_ARGS
 fi
-
-# Tail the log file
-tail -f /workspace/runpod-slim/comfyui.log
