@@ -227,7 +227,7 @@ done
 echo "'$TARGET_FILE' found! Executing next script..."
 
 # Run the next script
-bash ./installNodes.sh
+bash ../installNodes.sh
 
 echo "Starting ComfyUI with args: $FIXED_ARGS"
 python main.py $FIXED_ARGS &
