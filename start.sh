@@ -213,6 +213,22 @@ if [ -s "$ARGS_FILE" ]; then
     fi
 fi
 
+# Define the file to look for and the script to run afterward
+TARGET_FILE="ready"
+NEXT_SCRIPT="./next_script.sh"
+
+echo "Waiting for '$TARGET_FILE' to become available..."
+
+# Loop as long as the target file does NOT exist
+while [ ! -f "$TARGET_FILE" ]; do
+    sleep 0.5
+done
+
+echo "'$TARGET_FILE' found! Executing next script..."
+
+# Run the next script
+bash ./installNodes.sh
+
 echo "Starting ComfyUI with args: $FIXED_ARGS"
 python main.py $FIXED_ARGS &
 COMFY_PID=$!
